@@ -1232,20 +1232,81 @@ function analyzeBot(){
 
   document.getElementById('botResult').style.display = 'block';
 
-  // Show KB results
+  // Show KB results — synthesized natural answer
   searchKBForBot(q).then(kbR=>{
     const kbSec=document.getElementById('kbResultSection');
     if(kbSec){
       if(kbR&&kbR.length){
         kbSec.style.display='block';
+        // Update answerBox with KB-synthesized answer
+        const synthesized = synthesizeKBAnswer(q, lastBotIntent, kbR);
+        document.getElementById('answerBox').innerHTML = synthesized;
         document.getElementById('kbResultList').innerHTML=kbR.slice(0,3).map(r=>`
-          <div style="border:1px solid var(--border);border-radius:8px;padding:10px 12px;margin-bottom:8px;background:var(--bg);">
-            <div style="font-size:11px;color:var(--primary);font-weight:600;margin-bottom:4px;">📄 ${r.filename} › ${r.sheet_name} › แถวที่ ${r.row_index}</div>
-            <div style="font-size:13px;">${r.content&&r.content.length>200?r.content.substring(0,200)+'...':r.content||''}</div>
+          <div style="border:1px solid var(--border);border-radius:8px;padding:8px 12px;margin-bottom:6px;background:var(--bg);display:flex;align-items:center;gap:8px;">
+            <span style="font-size:16px;">📄</span>
+            <div style="font-size:11px;color:var(--muted);">${r.filename} › ${r.sheet_name} › แถวที่ ${r.row_index}</div>
           </div>`).join('');
       } else kbSec.style.display='none';
     }
   });
+}
+
+// ── Synthesize natural Thai answer from KB data ──
+function synthesizeKBAnswer(question, intent, kbRows) {
+  if(!kbRows||!kbRows.length) return '';
+  const r = kbRows[0];
+  const cells = r.cells || {};
+
+  // Parse pipe-separated content into key-value pairs
+  const pairs = {};
+  if(r.content) {
+    r.content.split('|').forEach(part=>{
+      const idx = part.indexOf(':');
+      if(idx>0){
+        const k = part.substring(0,idx).trim();
+        const v = part.substring(idx+1).trim();
+        if(k&&v) pairs[k]=v;
+      }
+    });
+  }
+  Object.assign(pairs, cells);
+
+  // Helper to pick first matching key
+  const get = (...keys) => { for(const k of keys){ for(const pk of Object.keys(pairs)){ if(pk.toLowerCase().includes(k.toLowerCase())&&pairs[pk]&&pairs[pk]!=='-'&&pairs[pk]!=='0') return pairs[pk]; }} return null; };
+
+  const model   = get('model','รุ่น','สินค้า');
+  const cap     = get('capacity','ความจุ','storage');
+  const cond    = get('condition','grade','สภาพ');
+  const price   = get('ราคาดาวน์','ราคา','price','ราคาขาย');
+  const p6      = get('ผ่อน 6','6 เดือน','install6');
+  const p10     = get('ผ่อน 10','10 เดือน','install10');
+  const p12     = get('ผ่อน 12','12 เดือน','install12');
+  const color   = get('สี','color');
+  const brand   = get('brand','ยี่ห้อ');
+  const service = get('บริการ','service','ประเภท');
+
+  let lines = [];
+
+  // Build natural sentence
+  let title = [brand,model,cap,cond&&cond.toLowerCase()!=='new'?`(${cond})`:''].filter(Boolean).join(' ');
+  if(title) lines.push(`<strong>${title}</strong>`);
+
+  if(price)  lines.push(`💰 ราคาดาวน์: <strong>${Number(price).toLocaleString('th-TH')||price} บาท</strong>`);
+  if(p6)     lines.push(`📅 ผ่อน 6 เดือน: ${Number(p6).toLocaleString('th-TH')||p6} บาท/เดือน`);
+  if(p10)    lines.push(`📅 ผ่อน 10 เดือน: ${Number(p10).toLocaleString('th-TH')||p10} บาท/เดือน`);
+  if(p12)    lines.push(`📅 ผ่อน 12 เดือน: ${Number(p12).toLocaleString('th-TH')||p12} บาท/เดือน`);
+  if(color)  lines.push(`🎨 สี: ${color}`);
+  if(service&&service.length<40) lines.push(`ℹ️ ${service}`);
+
+  // Fallback: show condensed content if no structured data parsed
+  if(lines.length<=1){
+    const clean = r.content ? r.content.replace(/[^ก-๙a-zA-Z0-9 ,.\-:]/g,'').substring(0,180) : '';
+    lines = [clean||'ขอบคุณที่สอบถามค่ะ 😊 มีข้อมูลจากคลังแต่ไม่สามารถแยกแยะได้อัตโนมัติ'];
+  }
+
+  if(kbRows.length>1) lines.push(`<span style="font-size:12px;color:var(--muted);">และอีก ${kbRows.length-1} รายการที่เกี่ยวข้อง</span>`);
+
+  return lines.join('<br>');
 }
 
 function openInClaude(){
@@ -1545,11 +1606,12 @@ async function testPrompt(){
   if(kbResults&&kbResults.length){ kbCtx=kbResults.map(r=>r.content).join('\n'); kbSrc=kbResults.map(r=>`📄 ${r.filename} › ${r.sheet_name} › แถวที่ ${r.row_index}`).join('<br>'); }
   const intent=classifyText(q);
   let html=`<strong>🎯 Intent:</strong> ${intent.label}<br><br>`;
-  if(kbCtx){
-    html+=`<strong>📚 ข้อมูลจากคลัง:</strong><br>${kbSrc}<br><br>`;
-    html+=`<strong>💬 ตัวอย่างคำตอบ:</strong><br>${kbCtx.substring(0,250)}${kbCtx.length>250?'...':''}`;
+  if(kbResults&&kbResults.length){
+    const synthesized = synthesizeKBAnswer(q, intent.label, kbResults);
+    html+=`<strong>💬 คำตอบที่แนะนำ:</strong><br>${synthesized}<br><br>`;
+    html+=`<span style="font-size:11px;color:var(--muted);">📄 จาก: ${kbSrc}</span>`;
   } else {
-    html+=`<strong>💬 ตัวอย่างคำตอบ:</strong><br>ขอบคุณที่สอบถามครับ จะรีบตรวจสอบข้อมูลให้นะครับ<br><span style="color:var(--muted);font-size:12px;">(เพิ่มข้อมูลใน ชุดข้อมูลคำตอบ เพื่อให้คำตอบแม่นยำขึ้น)</span>`;
+    html+=`<strong>💬 คำตอบที่แนะนำ:</strong><br>ขอบคุณที่สอบถามครับ จะรีบตรวจสอบข้อมูลให้นะครับ<br><span style="color:var(--muted);font-size:12px;">(เพิ่มข้อมูลใน ชุดข้อมูลคำตอบ เพื่อให้คำตอบแม่นยำขึ้น)</span>`;
   }
   el.innerHTML=html;
 }
